@@ -1,30 +1,25 @@
-"""Offline language identification: shared Conformer encoder + shared CTC + masks."""
+"""Language identification: preprocessing, shared encoder, shared CTC, masks."""
 
 from __future__ import annotations
 
 import io
 import json
+import os
 import wave
-from dataclasses import asdict
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 import numpy as np
 import onnxruntime as ort
 import torch
+import torch.nn.functional as F
 
-from lid.scoring import (
-    GLOBAL_BLANK_ID,
-    LOCAL_BLANK_ID,
-    SHARED_VOCAB_SIZE,
-    ScoringError,
-    as_lengths,
-    build_scoring_result,
-    language_index_matrix,
-    score_all_languages,
-    validate_candidates,
-)
+HF_REPO_ID = "ai4bharat/indic-conformer-600m-multilingual"
+
+ALLOW_PATTERNS = ["assets/*"]
+IGNORE_PATTERNS = ["assets/rnnt*", "assets/joint*", "assets/vocab.json"]
 
 REQUIRED_FILES = (
     "encoder.onnx",
@@ -33,7 +28,17 @@ REQUIRED_FILES = (
     "language_masks.json",
 )
 
+ASR_IGNORE_PREFIXES = ("rnnt", "joint")
+ASR_IGNORE_NAMES = frozenset({"vocab.json"})
+
 DEFAULT_CANDIDATES = ("hi", "kn", "mr", "ta", "te")
+
+ScoringMethod = Literal["normalized_ctc_score"]
+SCORING_METHODS: tuple[str, ...] = ("normalized_ctc_score",)
+
+LOCAL_BLANK_ID = 256
+SHARED_VOCAB_SIZE = 5633
+GLOBAL_BLANK_ID = 5632
 
 
 class LanguageIdentifierError(ValueError):
@@ -42,6 +47,256 @@ class LanguageIdentifierError(ValueError):
 
 class AudioError(LanguageIdentifierError):
     """Raised when audio cannot be decoded."""
+
+
+class ScoringError(ValueError):
+    """Raised when CTC logits / masks are incompatible with scoring."""
+
+
+@dataclass(frozen=True)
+class RankedLanguage:
+    language: str
+    score: float
+    rank: int
+
+
+@dataclass(frozen=True)
+class ScoringResult:
+    language: str | None
+    top_language: str | None
+    decision: str
+    confidence: float | None
+    margin: float | None
+    top_score: float | None
+    second_score: float | None
+    languages: list[RankedLanguage]
+    scoring_method: str
+    reason: str | None = None
+
+
+def resolve_hf_token() -> str | None:
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        value = os.environ.get(key)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
+def is_lid_artifact(name: str) -> bool:
+    if name in ASR_IGNORE_NAMES:
+        return False
+    if name.startswith(ASR_IGNORE_PREFIXES):
+        return False
+    return True
+
+
+def find_assets_dir(root: Path) -> Path:
+    if (root / "encoder.onnx").exists():
+        return root
+    assets = root / "assets"
+    if (assets / "encoder.onnx").exists():
+        return assets
+    raise LanguageIdentifierError(
+        f"Could not find LID artifacts under {root} or {assets}. "
+        "Set HF_TOKEN if the Hugging Face model is gated."
+    )
+
+
+def ensure_lid_artifacts(
+    repo_id: str = HF_REPO_ID,
+    *,
+    token: str | None = None,
+) -> Path:
+    """Download or resolve LID-only artifacts from the Hugging Face Hub cache."""
+
+    from huggingface_hub import snapshot_download
+
+    token = token if token is not None else resolve_hf_token()
+    kwargs: dict[str, Any] = {
+        "repo_id": repo_id,
+        "allow_patterns": ALLOW_PATTERNS,
+        "ignore_patterns": IGNORE_PATTERNS,
+    }
+    if token:
+        kwargs["token"] = token
+
+    try:
+        snapshot_dir = Path(snapshot_download(**kwargs, local_files_only=True))
+    except Exception:
+        snapshot_dir = Path(snapshot_download(**kwargs))
+
+    assets_dir = find_assets_dir(snapshot_dir)
+    missing = [name for name in REQUIRED_FILES if not (assets_dir / name).exists()]
+    if missing:
+        raise LanguageIdentifierError(
+            f"LID setup incomplete; missing in {assets_dir}: {missing}"
+        )
+
+    leaked = [
+        path.name
+        for path in assets_dir.iterdir()
+        if path.is_file() and not is_lid_artifact(path.name)
+    ]
+    if leaked:
+        raise LanguageIdentifierError(f"ASR artifacts unexpectedly present: {sorted(leaked)}")
+
+    return assets_dir
+
+
+def frame_mask(lengths: torch.Tensor, frames: int) -> torch.Tensor:
+    return torch.arange(frames, device=lengths.device).unsqueeze(0) < lengths.unsqueeze(1)
+
+
+def as_lengths(
+    encoded_lengths: Any,
+    batch_size: int,
+    max_frames: int,
+    device: torch.device,
+) -> torch.Tensor:
+    lengths = torch.as_tensor(encoded_lengths, device=device).reshape(-1).long()
+    if lengths.numel() != batch_size:
+        raise ScoringError(
+            f"encoded_lengths has {lengths.numel()} entries for a batch of {batch_size}"
+        )
+    if (lengths <= 0).any() or (lengths > max_frames).any():
+        raise ScoringError(
+            f"encoded_lengths must be in [1, {max_frames}], got {lengths.detach().cpu().tolist()}"
+        )
+    return lengths
+
+
+def language_index_matrix(
+    language_masks: dict[str, Sequence[bool] | torch.Tensor],
+    languages: Sequence[str],
+    vocabulary_size: int,
+    device: torch.device,
+    blank_id: int = LOCAL_BLANK_ID,
+) -> torch.Tensor:
+    indices: list[torch.Tensor] = []
+    for language in languages:
+        if language not in language_masks:
+            raise ScoringError(f"Missing language mask for {language!r}")
+        mask = torch.as_tensor(language_masks[language], dtype=torch.bool, device=device)
+        if mask.numel() != vocabulary_size:
+            raise ScoringError(
+                f"Mask for {language!r} has {mask.numel()} entries "
+                f"but CTC vocabulary has {vocabulary_size}"
+            )
+        if not bool(mask.any()):
+            raise ScoringError(f"Mask for {language!r} selects no CTC tokens")
+        indices.append(torch.nonzero(mask, as_tuple=False).squeeze(1))
+    sizes = {index.numel() for index in indices}
+    if len(sizes) != 1:
+        raise ScoringError(
+            "Equal-size language masks are required for batched scoring; "
+            f"found selected sizes {sorted(sizes)}"
+        )
+    result = torch.stack(indices)
+    if not 0 <= blank_id < result.shape[1]:
+        raise ScoringError(
+            f"BLANK_ID={blank_id} is invalid for {result.shape[1]}-token masked CTC vocabularies"
+        )
+    return result
+
+
+def score_all_languages(
+    ctc_logits: torch.Tensor,
+    lengths: torch.Tensor,
+    language_indices: torch.Tensor,
+    method: ScoringMethod = "normalized_ctc_score",
+    blank_id: int = LOCAL_BLANK_ID,
+) -> torch.Tensor:
+    if method not in SCORING_METHODS:
+        raise ScoringError(f"Unknown scoring method: {method!r}")
+    if ctc_logits.ndim != 3:
+        raise ScoringError(f"Expected CTC logits [B, T, V], got {tuple(ctc_logits.shape)}")
+
+    language_logits = ctc_logits[:, :, language_indices]
+    log_probs = F.log_softmax(language_logits.float(), dim=-1)
+    if not torch.isfinite(log_probs).all():
+        raise ScoringError("CTC output contains NaN or infinite values")
+
+    valid = frame_mask(lengths, log_probs.shape[1]).unsqueeze(-1)
+    valid_count = lengths.to(log_probs.dtype).unsqueeze(1)
+    best_logprob, best_token = log_probs.max(dim=-1)
+
+    changed = torch.ones_like(best_token, dtype=torch.bool)
+    if best_token.shape[1] > 1:
+        changed[:, 1:, :] = best_token[:, 1:, :] != best_token[:, :-1, :]
+    kept = valid & changed & (best_token != blank_id)
+    kept_count = kept.sum(dim=1)
+    token_score = (best_logprob * kept).sum(dim=1) / kept_count.clamp_min(1)
+    frame_score = (best_logprob * valid).sum(dim=1) / valid_count
+    return torch.where(kept_count > 0, token_score, frame_score)
+
+
+def build_scoring_result(
+    scores: torch.Tensor,
+    languages: Sequence[str],
+    method: str,
+    *,
+    margin_threshold: float | None,
+    confidence_threshold: float | None = None,
+) -> ScoringResult:
+    if scores.ndim != 1:
+        raise ScoringError(f"Expected score vector [L], got {tuple(scores.shape)}")
+    if scores.numel() != len(languages):
+        raise ScoringError("Score vector length must match candidate languages")
+
+    confidence_values = torch.softmax(scores, dim=0)
+    ranked_scores, ranked_indices = scores.sort(dim=0, descending=True)
+    ranking = [
+        RankedLanguage(
+            language=languages[index],
+            score=float(ranked_scores[rank]),
+            rank=rank + 1,
+        )
+        for rank, index in enumerate(ranked_indices.tolist())
+    ]
+    top_index = int(ranked_indices[0])
+    top_language = languages[top_index]
+    top_score = float(ranked_scores[0])
+    second_score = float(ranked_scores[1]) if len(languages) > 1 else None
+    margin = top_score - second_score if second_score is not None else None
+    confidence = float(confidence_values[top_index])
+
+    accepted = (
+        (confidence_threshold is None or confidence >= confidence_threshold)
+        and (margin_threshold is None or margin is None or margin >= margin_threshold)
+    )
+    return ScoringResult(
+        language=top_language,
+        top_language=top_language,
+        decision="accepted" if accepted else "uncertain",
+        confidence=confidence,
+        margin=margin,
+        top_score=top_score,
+        second_score=second_score,
+        languages=ranking,
+        scoring_method=method,
+        reason=None if accepted else "language_uncertain",
+    )
+
+
+def validate_candidates(
+    requested: Sequence[str] | None,
+    available: Sequence[str],
+) -> tuple[str, ...]:
+    available_set = set(available)
+    if requested is None:
+        return tuple(available)
+    languages = tuple(requested)
+    if not languages:
+        raise ValueError("At least one candidate language is required")
+    if len(set(languages)) != len(languages):
+        raise ValueError("Candidate languages must not contain duplicates")
+    unsupported = sorted(set(languages) - available_set)
+    if unsupported:
+        raise ValueError(
+            f"Unknown candidate languages {unsupported}; "
+            f"supported: {', '.join(available)}"
+        )
+    return languages
 
 
 def _decode_audio_bytes(data: bytes) -> tuple[np.ndarray, int]:
@@ -111,18 +366,16 @@ def _rms_energy(wav: torch.Tensor) -> float:
 
 
 class LanguageIdentifier:
-    """Identify spoken language using shared encoder + CTC + vocabulary masks.
-
-    Per ``identify`` call: exactly one encoder ONNX run and one CTC ONNX run,
-    then vectorized mask scoring on the shared logits.
-    """
+    """Identify spoken language using shared encoder + CTC + vocabulary masks."""
 
     def __init__(
         self,
-        model_dir: str | Path = "./model",
         device: str = "cpu",
         candidate_languages: Sequence[str] | None = None,
         *,
+        assets_dir: str | Path | None = None,
+        hf_repo_id: str = HF_REPO_ID,
+        hf_token: str | None = None,
         margin_threshold: float = 0.050965,
         confidence_threshold: float | None = None,
         min_probe_duration_ms: float = 500.0,
@@ -130,7 +383,6 @@ class LanguageIdentifier:
         sample_rate: int = 16_000,
         blank_id: int = LOCAL_BLANK_ID,
     ) -> None:
-        self.model_dir = Path(model_dir).expanduser().resolve()
         self.device_request = device.lower().strip()
         if self.device_request not in {"cuda", "cpu"}:
             raise LanguageIdentifierError("device must be 'cuda' or 'cpu'")
@@ -141,18 +393,21 @@ class LanguageIdentifier:
         self.sample_rate = sample_rate
         self.blank_id = blank_id
         self.scoring_method = "normalized_ctc_score"
+        self.hf_repo_id = hf_repo_id
 
         self.encoder_calls = 0
         self.ctc_calls = 0
 
-        self._validate_artifacts()
+        if assets_dir is None:
+            self.assets_dir = ensure_lid_artifacts(hf_repo_id, token=hf_token)
+        else:
+            self.assets_dir = find_assets_dir(Path(assets_dir).expanduser().resolve())
+
         self.providers = self._resolve_providers(self.device_request)
-        # Preprocessor is TorchScript only; encoder/CTC run in ONNX Runtime.
-        # Always load on CPU so Torch CUDA / driver mismatches never block startup.
         self.torch_device = torch.device("cpu")
 
         self.preprocessor = torch.jit.load(
-            str(self.model_dir / "preprocessor.ts"),
+            str(self.assets_dir / "preprocessor.ts"),
             map_location="cpu",
         )
         self.preprocessor.eval()
@@ -161,12 +416,12 @@ class LanguageIdentifier:
         session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         try:
             self.encoder = ort.InferenceSession(
-                str(self.model_dir / "encoder.onnx"),
+                str(self.assets_dir / "encoder.onnx"),
                 sess_options=session_options,
                 providers=self.providers,
             )
             self.ctc_decoder = ort.InferenceSession(
-                str(self.model_dir / "ctc_decoder.onnx"),
+                str(self.assets_dir / "ctc_decoder.onnx"),
                 sess_options=session_options,
                 providers=self.providers,
             )
@@ -174,14 +429,13 @@ class LanguageIdentifier:
             if self.device_request == "cuda":
                 raise LanguageIdentifierError(
                     "Failed to create ONNX sessions with CUDA. "
-                    "Need CUDA 12 + cuDNN 9 on the host, or use Docker "
-                    "(make docker-build && make docker-run), or set LID_DEVICE=cpu. "
+                    "Need CUDA 12 + cuDNN 9, or set DEVICE='cpu' in server.py. "
                     f"Underlying error: {exc}"
                 ) from exc
             raise LanguageIdentifierError(f"Failed to create ONNX sessions: {exc}") from exc
         self._assert_active_providers()
 
-        with open(self.model_dir / "language_masks.json", encoding="utf-8") as reader:
+        with open(self.assets_dir / "language_masks.json", encoding="utf-8") as reader:
             raw_masks = json.load(reader)
         if not isinstance(raw_masks, dict) or not raw_masks:
             raise LanguageIdentifierError("language_masks.json must be a non-empty object")
@@ -191,7 +445,6 @@ class LanguageIdentifier:
         self._validate_masks()
         self.available_languages = tuple(sorted(self.language_masks.keys()))
         if candidate_languages is None:
-            # Prefer a sensible default subset when available; else all masks.
             defaults = [c for c in DEFAULT_CANDIDATES if c in self.language_masks]
             self.candidate_languages = tuple(defaults) if defaults else self.available_languages
         else:
@@ -199,16 +452,6 @@ class LanguageIdentifier:
                 candidate_languages, self.available_languages
             )
         self._index_cache: dict[tuple[str, ...], torch.Tensor] = {}
-
-    def _validate_artifacts(self) -> None:
-        if not self.model_dir.is_dir():
-            raise LanguageIdentifierError(f"Model directory does not exist: {self.model_dir}")
-        missing = [name for name in REQUIRED_FILES if not (self.model_dir / name).exists()]
-        if missing:
-            raise LanguageIdentifierError(
-                f"Missing required model artifacts in {self.model_dir}: {', '.join(missing)}. "
-                "Run: make setup"
-            )
 
     def _validate_masks(self) -> None:
         lengths = {len(mask) for mask in self.language_masks.values()}
@@ -235,10 +478,7 @@ class LanguageIdentifier:
             if "CUDAExecutionProvider" not in available:
                 raise LanguageIdentifierError(
                     "device='cuda' requested but CUDAExecutionProvider is unavailable "
-                    f"(available={available}). "
-                    "Install cuDNN 9 + CUDA 12 on the host, or use Docker "
-                    "(make docker-build && make docker-run), or set LID_DEVICE=cpu "
-                    "and run: make run."
+                    f"(available={available}). Install CUDA 12 + cuDNN 9, or set DEVICE='cpu'."
                 )
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
         return ["CPUExecutionProvider"]
@@ -252,9 +492,7 @@ class LanguageIdentifier:
                 raise LanguageIdentifierError(
                     f"CUDA was requested but the {name} session is not using "
                     f"CUDAExecutionProvider (active={providers}). "
-                    "Usually missing libcudnn.so.9 (cuDNN 9). "
-                    "Fix: install cuDNN 9, or use Docker (make docker-run), "
-                    "or set LID_DEVICE=cpu."
+                    "Usually missing libcudnn.so.9 (cuDNN 9). Set DEVICE='cpu' to fall back."
                 )
 
     @property
@@ -331,46 +569,23 @@ class LanguageIdentifier:
         *,
         candidate_languages: Sequence[str] | None = None,
     ) -> dict[str, Any]:
-        total_started = perf_counter()
-        audio_ms = 0.0
-        encoder_ms = 0.0
-        ctc_ms = 0.0
-        scoring_ms = 0.0
-
-        prep_started = perf_counter()
-        wav, duration_ms = _to_waveform(audio, self.sample_rate)
-        audio_ms = (perf_counter() - prep_started) * 1000.0
-
         if candidate_languages is None:
             languages = self.candidate_languages
         else:
             languages = validate_candidates(candidate_languages, self.available_languages)
 
+        wav, duration_ms = _to_waveform(audio, self.sample_rate)
+
         if duration_ms < self.min_probe_duration_ms:
-            return self._guard_result(
-                "insufficient_audio",
-                duration_ms,
-                self._latency(audio_ms, 0, 0, 0, (perf_counter() - total_started) * 1000),
-            )
+            return self._empty_result(languages)
 
         energy = _rms_energy(wav)
         if self.min_rms_energy is not None and energy < self.min_rms_energy:
-            payload = self._guard_result(
-                "insufficient_speech_energy",
-                duration_ms,
-                self._latency(audio_ms, 0, 0, 0, (perf_counter() - total_started) * 1000),
-            )
-            payload["rms_energy"] = energy
-            return payload
+            return self._empty_result(languages)
 
         before_enc, before_ctc = self.encoder_calls, self.ctc_calls
-        enc_started = perf_counter()
         encoder_outputs, encoded_lengths = self.encode(wav)
-        encoder_ms = (perf_counter() - enc_started) * 1000.0
-
-        ctc_started = perf_counter()
         ctc_logits = self.project_ctc(encoder_outputs)
-        ctc_ms = (perf_counter() - ctc_started) * 1000.0
 
         if self.encoder_calls - before_enc != 1 or self.ctc_calls - before_ctc != 1:
             raise LanguageIdentifierError(
@@ -379,7 +594,6 @@ class LanguageIdentifier:
                 f"ctc_delta={self.ctc_calls - before_ctc}"
             )
 
-        score_started = perf_counter()
         try:
             lengths = as_lengths(
                 encoded_lengths, ctc_logits.shape[0], ctc_logits.shape[1], ctc_logits.device
@@ -397,72 +611,33 @@ class LanguageIdentifier:
             )
         except ScoringError as exc:
             raise LanguageIdentifierError(str(exc)) from exc
-        scoring_ms = (perf_counter() - score_started) * 1000.0
-        total_ms = (perf_counter() - total_started) * 1000.0
 
         return {
             "language": result.language,
-            "top_language": result.top_language,
-            "decision": result.decision,
-            "confidence": result.confidence,
             "margin": result.margin,
-            "top_score": result.top_score,
-            "second_score": result.second_score,
-            "languages": [asdict(item) for item in result.languages],
-            "scoring_method": result.scoring_method,
-            "reason": result.reason,
-            "duration_ms": duration_ms,
+            "scores": {item.language: item.score for item in result.languages},
+            "top_candidates": [
+                {"language": item.language, "score": item.score} for item in result.languages
+            ],
             "encoder_calls": 1,
             "ctc_calls": 1,
-            "latency_ms": self._latency(audio_ms, encoder_ms, ctc_ms, scoring_ms, total_ms),
-            "providers": self.active_providers,
-            "device": self.runtime_device,
         }
 
-    @staticmethod
-    def _latency(
-        audio_ms: float, encoder_ms: float, ctc_ms: float, scoring_ms: float, total_ms: float
-    ) -> dict[str, float]:
-        return {
-            "audio_preprocessing": round(audio_ms, 3),
-            "encoder": round(encoder_ms, 3),
-            "ctc": round(ctc_ms, 3),
-            "scoring": round(scoring_ms, 3),
-            "total": round(total_ms, 3),
-        }
-
-    def _guard_result(
-        self, reason: str, duration_ms: float, latency_ms: dict[str, float]
-    ) -> dict[str, Any]:
+    def _empty_result(self, languages: Sequence[str]) -> dict[str, Any]:
         return {
             "language": None,
-            "top_language": None,
-            "decision": reason,
-            "confidence": None,
             "margin": None,
-            "top_score": None,
-            "second_score": None,
-            "languages": [],
-            "scoring_method": self.scoring_method,
-            "reason": reason,
-            "duration_ms": duration_ms,
+            "scores": {lang: None for lang in languages},
+            "top_candidates": [],
             "encoder_calls": 0,
             "ctc_calls": 0,
-            "latency_ms": latency_ms,
-            "providers": self.active_providers,
-            "device": self.runtime_device,
         }
 
     def health(self) -> dict[str, Any]:
         return {
             "status": "ok",
-            "model_loaded": True,
             "device": self.runtime_device,
-            "device_requested": self.device_request,
+            "model_loaded": True,
+            "available_languages": list(self.available_languages),
             "providers": self.active_providers,
-            "languages_loaded": list(self.candidate_languages),
-            "languages_available": list(self.available_languages),
-            "model_dir": str(self.model_dir),
-            "scoring_method": self.scoring_method,
-            "margin_threshold": self.margin_threshold,
         }

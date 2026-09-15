@@ -1,14 +1,14 @@
-"""FastAPI language identification service (no transcription)."""
+"""Minimal language identification API."""
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
+
+from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from lid import LanguageIdentifier, LanguageIdentifierError
 
@@ -16,13 +16,12 @@ from lid import LanguageIdentifier, LanguageIdentifierError
 # Change this to "cpu" if you do not have a working NVIDIA GPU / cuDNN setup.
 # ---------------------------------------------------------------------------
 DEVICE = "cuda"
+# DEVICE = "cpu"
 
 HOST = "0.0.0.0"
 PORT = 8007
-MODEL_DIR = Path("model")
 CANDIDATE_LANGUAGES = ["hi", "kn", "mr", "ta", "te"]
 MARGIN_THRESHOLD = 0.050965
-
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
@@ -33,37 +32,23 @@ def _parse_languages(raw: str | None) -> list[str] | None:
     return [p for p in parts if p]
 
 
-def _app_config() -> dict[str, Any]:
-    return {
-        "model_dir": MODEL_DIR,
-        "device": DEVICE,
-        "candidate_languages": CANDIDATE_LANGUAGES,
-        "margin_threshold": MARGIN_THRESHOLD,
-    }
-
-
 def create_app(model: LanguageIdentifier | None = None) -> FastAPI:
     state: dict[str, Any] = {"model": model}
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         if state["model"] is None:
-            cfg = _app_config()
             try:
-                state["model"] = LanguageIdentifier(**cfg)
+                state["model"] = LanguageIdentifier(
+                    device=DEVICE,
+                    candidate_languages=CANDIDATE_LANGUAGES,
+                    margin_threshold=MARGIN_THRESHOLD,
+                )
             except LanguageIdentifierError as exc:
                 raise RuntimeError(f"Failed to load language ID model: {exc}") from exc
         yield
 
-    app = FastAPI(
-        title="Language Identification",
-        description=(
-            "Spoken language identification using a shared Conformer encoder, "
-            "shared CTC output, and language vocabulary masks. Does not transcribe."
-        ),
-        version="1.0.0",
-        lifespan=lifespan,
-    )
+    app = FastAPI(title="Language Identification", version="1.0.0", lifespan=lifespan)
 
     def get_model() -> LanguageIdentifier:
         loaded = state.get("model")
@@ -78,9 +63,6 @@ def create_app(model: LanguageIdentifier | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Frontend not found")
         return FileResponse(index)
 
-    if STATIC_DIR.is_dir():
-        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
     @app.get("/health")
     def health() -> dict[str, Any]:
         try:
@@ -88,10 +70,10 @@ def create_app(model: LanguageIdentifier | None = None) -> FastAPI:
         except HTTPException:
             return {
                 "status": "error",
-                "model_loaded": False,
                 "device": DEVICE,
+                "model_loaded": False,
+                "available_languages": [],
                 "providers": [],
-                "languages_available": [],
             }
 
     @app.post("/identify")
@@ -107,9 +89,14 @@ def create_app(model: LanguageIdentifier | None = None) -> FastAPI:
             result = get_model().identify(payload, candidate_languages=languages)
         except (LanguageIdentifierError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        result.pop("transcript", None)
-        result.pop("text", None)
-        return JSONResponse(result)
+        return JSONResponse(
+            {
+                "language": result["language"],
+                "scores": result["scores"],
+                "margin": result["margin"],
+                "top_candidates": result["top_candidates"],
+            }
+        )
 
     return app
 

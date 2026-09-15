@@ -1,8 +1,10 @@
-# Python dependencies for Language ID (API, UI, model download, tests).
+# Python dependencies for the LID pilot (API, model download, tests).
 #
+# Install:
+#   pip install -U pip
 #   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 #
-# torch is installed as a CPU wheel (preprocessor only).
+# torch is the CPU wheel (TorchScript preprocessor only).
 # onnxruntime-gpu runs encoder/CTC on NVIDIA GPU when CUDA 12 + cuDNN 9 are present.
 #
 # Python: 3.10 – 3.12
@@ -10,8 +12,6 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
-pydantic==2.10.4
-python-dotenv==1.0.1
 
 numpy==1.26.4
 soundfile==0.12.1
@@ -21,5 +21,4 @@ onnxruntime-gpu==1.19.2
 
 huggingface_hub==0.27.1
 
-httpx==0.28.1
 pytest==8.3.4

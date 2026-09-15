@@ -5,7 +5,6 @@ __pycache__/
 venv/
 .env
 .env.*
-!.env.example
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -15,9 +14,4 @@ dist/
 build/
 *.egg-info/
 .DS_Store
-
-# Model weights (populate via scripts/setup_model.py)
-model/*
-!model/.gitkeep
-
-*.onnx
+model/
