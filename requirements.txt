@@ -1,35 +1,25 @@
-# Everything required to run Language ID (API + UI + model download + tests).
+# Python dependencies for Language ID (API, UI, model download, tests).
 #
-# Install:
 #   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-#   (or: make install)
 #
-# Inference uses onnxruntime-gpu (CPU EP always available; CUDA EP needs host
-# CUDA 12 + cuDNN 9, or the Docker GPU image).
-# Torch is CPU-only (preprocessor only).
+# torch is installed as a CPU wheel (preprocessor only).
+# onnxruntime-gpu runs encoder/CTC on NVIDIA GPU when CUDA 12 + cuDNN 9 are present.
 #
 # Python: 3.10 – 3.12
 
-# API
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 pydantic==2.10.4
 python-dotenv==1.0.1
 
-# Audio + numerics
 numpy==1.26.4
 soundfile==0.12.1
 
-# Preprocessor (TorchScript) — install CPU wheel via PyTorch CPU index
 torch==2.4.1
-
-# ONNX Runtime — GPU package (includes CPUExecutionProvider)
 onnxruntime-gpu==1.19.2
 
-# Model download (make setup only; server does not download at runtime)
 huggingface_hub==0.27.1
 
-# Tests
 httpx==0.28.1
 pytest==8.3.4

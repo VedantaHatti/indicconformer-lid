@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from lid import LanguageIdentifier, LanguageIdentifierError
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+# ---------------------------------------------------------------------------
+# Change this to "cpu" if you do not have a working NVIDIA GPU / cuDNN setup.
+# ---------------------------------------------------------------------------
+DEVICE = "cuda"
+
+HOST = "0.0.0.0"
+PORT = 8007
+MODEL_DIR = Path("model")
+CANDIDATE_LANGUAGES = ["hi", "kn", "mr", "ta", "te"]
+MARGIN_THRESHOLD = 0.050965
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -26,13 +33,12 @@ def _parse_languages(raw: str | None) -> list[str] | None:
     return [p for p in parts if p]
 
 
-def _config_from_env() -> dict[str, Any]:
-    languages = _parse_languages(os.getenv("LID_CANDIDATE_LANGUAGES", "hi,kn,mr,ta,te"))
+def _app_config() -> dict[str, Any]:
     return {
-        "model_dir": Path(os.getenv("MODEL_DIR", "model")).expanduser(),
-        "device": os.getenv("LID_DEVICE", "cpu").strip().lower(),
-        "candidate_languages": languages,
-        "margin_threshold": float(os.getenv("LID_MARGIN_THRESHOLD", "0.050965")),
+        "model_dir": MODEL_DIR,
+        "device": DEVICE,
+        "candidate_languages": CANDIDATE_LANGUAGES,
+        "margin_threshold": MARGIN_THRESHOLD,
     }
 
 
@@ -42,7 +48,7 @@ def create_app(model: LanguageIdentifier | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         if state["model"] is None:
-            cfg = _config_from_env()
+            cfg = _app_config()
             try:
                 state["model"] = LanguageIdentifier(**cfg)
             except LanguageIdentifierError as exc:
@@ -80,11 +86,10 @@ def create_app(model: LanguageIdentifier | None = None) -> FastAPI:
         try:
             return get_model().health()
         except HTTPException:
-            cfg = _config_from_env()
             return {
                 "status": "error",
                 "model_loaded": False,
-                "device": cfg["device"],
+                "device": DEVICE,
                 "providers": [],
                 "languages_available": [],
             }
@@ -115,9 +120,8 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
-    host = os.getenv("LID_HOST", "0.0.0.0")
-    port = int(os.getenv("LID_PORT", "8007"))
-    uvicorn.run("server:app", host=host, port=port, reload=False)
+    print(f"Device={DEVICE}  UI=http://127.0.0.1:{PORT}/")
+    uvicorn.run("server:app", host=HOST, port=PORT, reload=False)
 
 
 if __name__ == "__main__":
