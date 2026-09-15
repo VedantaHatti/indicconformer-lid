@@ -139,12 +139,16 @@ def download_from_hub(
     return materialize_flat(assets, dest, force=force)
 
 
+def model_ready(dest: Path) -> bool:
+    return all((dest / name).exists() for name in REQUIRED_NAMES)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dest", type=Path, default=Path("model"))
     parser.add_argument("--repo-id", default=HF_REPO_ID)
     parser.add_argument("--token", default=None, help="Prefer HF_TOKEN env or prompt")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--force", action="store_true", help="Re-download even if model exists")
     parser.add_argument(
         "--local-only",
         action="store_true",
@@ -160,6 +164,13 @@ def main(argv: list[str] | None = None) -> int:
     dest = args.dest.expanduser().resolve()
 
     try:
+        if model_ready(dest) and not args.force and args.from_local_assets is None:
+            print(f"Model already present in {dest} — skipping download.")
+            for name in REQUIRED_NAMES:
+                print(f"  OK  {name}")
+            print("\nNext: make run")
+            return 0
+
         if args.from_local_assets is not None:
             copied = copy_from_local(
                 args.from_local_assets.expanduser().resolve(), dest, force=args.force
@@ -169,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
                 import huggingface_hub  # noqa: F401
             except ImportError:
                 print(
-                    "ERROR: install huggingface_hub first:\n  pip install huggingface_hub",
+                    "ERROR: install dependencies first:\n  make install",
                     file=sys.stderr,
                 )
                 return 1
@@ -185,8 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Materialized {len(copied)} LID artifacts into {dest}")
         inspect_destination(dest)
         print("\nSetup complete. Inference runs offline from local files.")
-        print("Start the server with:")
-        print("  MODEL_DIR=model uvicorn server:app --host 0.0.0.0 --port 8007")
+        print("Next: make run")
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: {exc}", file=sys.stderr)

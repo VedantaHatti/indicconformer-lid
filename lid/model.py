@@ -174,8 +174,9 @@ class LanguageIdentifier:
             if self.device_request == "cuda":
                 raise LanguageIdentifierError(
                     "Failed to create ONNX sessions with CUDA. "
-                    "Install requirements-gpu.txt (and a working NVIDIA driver), "
-                    f"or set LID_DEVICE=cpu. Underlying error: {exc}"
+                    "Need CUDA 12 + cuDNN 9 on the host, or use Docker "
+                    "(make docker-build && make docker-run), or set LID_DEVICE=cpu. "
+                    f"Underlying error: {exc}"
                 ) from exc
             raise LanguageIdentifierError(f"Failed to create ONNX sessions: {exc}") from exc
         self._assert_active_providers()
@@ -206,7 +207,7 @@ class LanguageIdentifier:
         if missing:
             raise LanguageIdentifierError(
                 f"Missing required model artifacts in {self.model_dir}: {', '.join(missing)}. "
-                "Run: make setup  (or python scripts/setup_model.py)"
+                "Run: make setup"
             )
 
     def _validate_masks(self) -> None:
@@ -234,9 +235,10 @@ class LanguageIdentifier:
             if "CUDAExecutionProvider" not in available:
                 raise LanguageIdentifierError(
                     "device='cuda' requested but CUDAExecutionProvider is unavailable "
-                    f"(available={available}). Install GPU deps with: "
-                    "pip uninstall -y onnxruntime && pip install -r requirements-gpu.txt "
-                    "(or run: make setup and choose gpu). Otherwise set LID_DEVICE=cpu."
+                    f"(available={available}). "
+                    "Install cuDNN 9 + CUDA 12 on the host, or use Docker "
+                    "(make docker-build && make docker-run), or set LID_DEVICE=cpu "
+                    "and run: make run."
                 )
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
         return ["CPUExecutionProvider"]
@@ -250,7 +252,9 @@ class LanguageIdentifier:
                 raise LanguageIdentifierError(
                     f"CUDA was requested but the {name} session is not using "
                     f"CUDAExecutionProvider (active={providers}). "
-                    "Check NVIDIA driver / CUDA libs, or set LID_DEVICE=cpu."
+                    "Usually missing libcudnn.so.9 (cuDNN 9). "
+                    "Fix: install cuDNN 9, or use Docker (make docker-run), "
+                    "or set LID_DEVICE=cpu."
                 )
 
     @property
