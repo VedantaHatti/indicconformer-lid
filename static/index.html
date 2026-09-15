@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Language ID</title>
+  <style>
+    :root {
+      --ink: #1a2421;
+      --moss: #2f5d50;
+      --moss-deep: #1e3d35;
+      --paper: #f6f1e8;
+      --paper-2: #e8e0d2;
+      --accent: #c45c26;
+      --muted: #5c6b66;
+      --line: rgba(26, 36, 33, 0.12);
+      --ok: #2f5d50;
+      --warn: #a15c1a;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #fff8ee 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #dce8e2 0%, transparent 50%),
+        linear-gradient(165deg, var(--paper) 0%, var(--paper-2) 100%);
+      min-height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .stage {
+      width: min(440px, 100%);
+      text-align: center;
+    }
+
+    .brand {
+      font-size: clamp(2.4rem, 8vw, 3.2rem);
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      margin: 0 0 0.45rem;
+      color: var(--moss-deep);
+    }
+
+    .tagline {
+      margin: 0 0 2rem;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.4;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 1.75rem;
+    }
+    .dot {
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .dot.ok { background: var(--ok); }
+    .dot.bad { background: #b33; }
+
+    .mic {
+      width: 148px;
+      height: 148px;
+      border-radius: 50%;
+      border: none;
+      cursor: pointer;
+      color: #fff;
+      background: linear-gradient(160deg, var(--moss) 0%, var(--moss-deep) 100%);
+      box-shadow:
+        0 18px 40px rgba(30, 61, 53, 0.28),
+        inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      font-size: 0.95rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+    .mic:hover { transform: translateY(-1px); }
+    .mic:active,
+    .mic.recording {
+      transform: scale(1.04);
+      background: linear-gradient(160deg, var(--accent) 0%, #8f3d14 100%);
+      box-shadow: 0 0 0 10px rgba(196, 92, 38, 0.16), 0 18px 40px rgba(196, 92, 38, 0.28);
+    }
+    .mic:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .hint {
+      margin: 1.1rem 0 0;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .result {
+      margin-top: 2.25rem;
+      min-height: 8.5rem;
+    }
+
+    .lang-code {
+      font-size: clamp(3rem, 12vw, 4.25rem);
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      line-height: 1;
+      margin: 0;
+      color: var(--moss-deep);
+      text-transform: uppercase;
+    }
+    .lang-code.uncertain { color: var(--warn); }
+    .lang-code.empty { color: var(--muted); font-size: 1.4rem; font-weight: 500; letter-spacing: 0; text-transform: none; }
+
+    .meta {
+      margin: 0.65rem 0 0;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .ranks {
+      list-style: none;
+      padding: 0;
+      margin: 1.15rem 0 0;
+      display: grid;
+      gap: 0.35rem;
+      text-align: left;
+    }
+    .ranks li {
+      display: grid;
+      grid-template-columns: 1.5rem 2.5rem 1fr;
+      gap: 0.5rem;
+      align-items: baseline;
+      font-size: 0.92rem;
+      padding: 0.35rem 0.55rem;
+      border-top: 1px solid var(--line);
+    }
+    .ranks li:first-child { border-top: none; }
+    .ranks .rank { color: var(--muted); }
+    .ranks .code { font-weight: 700; text-transform: uppercase; }
+    .ranks .score { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+    .error {
+      margin-top: 1rem;
+      color: #9b2c2c;
+      font-size: 0.9rem;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mic { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <h1 class="brand">Language ID</h1>
+    <p class="tagline">Hold the button, speak, release — see the detected language.</p>
+
+    <div class="status" id="status">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">Checking server…</span>
+    </div>
+
+    <button
+      class="mic"
+      id="micBtn"
+      type="button"
+      disabled
+      aria-pressed="false"
+      aria-label="Hold to speak"
+    >Hold to talk</button>
+    <p class="hint" id="hint">Uses your microphone. Audio stays on this machine’s server.</p>
+
+    <section class="result" aria-live="polite">
+      <p class="lang-code empty" id="langCode">Ready</p>
+      <p class="meta" id="meta"></p>
+      <ol class="ranks" id="ranks" hidden></ol>
+      <p class="error" id="error" hidden></p>
+    </section>
+  </main>
+
+  <script>
+    const micBtn = document.getElementById("micBtn");
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const langCode = document.getElementById("langCode");
+    const meta = document.getElementById("meta");
+    const ranks = document.getElementById("ranks");
+    const errorEl = document.getElementById("error");
+    const hint = document.getElementById("hint");
+
+    let mediaStream = null;
+    let audioContext = null;
+    let processor = null;
+    let source = null;
+    let chunks = [];
+    let recording = false;
+    let sampleRate = 16000;
+
+    function setStatus(ok, text) {
+      statusDot.className = "dot " + (ok === true ? "ok" : ok === false ? "bad" : "");
+      statusText.textContent = text;
+    }
+
+    function showError(msg) {
+      errorEl.hidden = !msg;
+      errorEl.textContent = msg || "";
+    }
+
+    function floatTo16BitPCM(float32) {
+      const out = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      return out;
+    }
+
+    function encodeWav(float32, rate) {
+      const pcm = floatTo16BitPCM(float32);
+      const buffer = new ArrayBuffer(44 + pcm.length * 2);
+      const view = new DataView(buffer);
+      const writeStr = (offset, str) => {
+        for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+      };
+      writeStr(0, "RIFF");
+      view.setUint32(4, 36 + pcm.length * 2, true);
+      writeStr(8, "WAVE");
+      writeStr(12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, rate, true);
+      view.setUint32(28, rate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeStr(36, "data");
+      view.setUint32(40, pcm.length * 2, true);
+      let offset = 44;
+      for (let i = 0; i < pcm.length; i++, offset += 2) {
+        view.setInt16(offset, pcm[i], true);
+      }
+      return new Blob([buffer], { type: "audio/wav" });
+    }
+
+    function downsample(buffer, fromRate, toRate) {
+      if (fromRate === toRate) return buffer;
+      const ratio = fromRate / toRate;
+      const newLen = Math.max(1, Math.round(buffer.length / ratio));
+      const result = new Float32Array(newLen);
+      for (let i = 0; i < newLen; i++) {
+        const start = Math.floor(i * ratio);
+        const end = Math.min(Math.floor((i + 1) * ratio), buffer.length);
+        let sum = 0;
+        let count = 0;
+        for (let j = start; j < end; j++) {
+          sum += buffer[j];
+          count++;
+        }
+        result[i] = count ? sum / count : buffer[start] || 0;
+      }
+      return result;
+    }
+
+    async function ensureMic() {
+      if (mediaStream) return;
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+    }
+
+    async function startRecording() {
+      if (recording) return;
+      showError("");
+      await ensureMic();
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      sampleRate = audioContext.sampleRate;
+      source = audioContext.createMediaStreamSource(mediaStream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      chunks = [];
+      processor.onaudioprocess = (e) => {
+        if (!recording) return;
+        chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      };
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      recording = true;
+      micBtn.classList.add("recording");
+      micBtn.setAttribute("aria-pressed", "true");
+      micBtn.textContent = "Listening…";
+      hint.textContent = "Release to identify the language.";
+      langCode.textContent = "…";
+      langCode.className = "lang-code empty";
+      meta.textContent = "";
+      ranks.hidden = true;
+    }
+
+    function stopRecording() {
+      if (!recording) return;
+      recording = false;
+      micBtn.classList.remove("recording");
+      micBtn.setAttribute("aria-pressed", "false");
+      micBtn.textContent = "Hold to talk";
+      hint.textContent = "Identifying…";
+
+      try { processor && processor.disconnect(); } catch (_) {}
+      try { source && source.disconnect(); } catch (_) {}
+      try { audioContext && audioContext.close(); } catch (_) {}
+      processor = null;
+      source = null;
+      audioContext = null;
+
+      if (!chunks.length) {
+        hint.textContent = "Hold the button, speak, then release.";
+        langCode.textContent = "Ready";
+        showError("No audio captured. Try again.");
+        return;
+      }
+
+      let total = 0;
+      for (const c of chunks) total += c.length;
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        merged.set(c, offset);
+        offset += c.length;
+      }
+      const pcm16k = downsample(merged, sampleRate, 16000);
+      if (pcm16k.length < 16000 * 0.4) {
+        hint.textContent = "Hold a bit longer (about 1 second).";
+        langCode.textContent = "Too short";
+        langCode.className = "lang-code empty";
+        return;
+      }
+      const wav = encodeWav(pcm16k, 16000);
+      identify(wav);
+    }
+
+    async function identify(blob) {
+      micBtn.disabled = true;
+      try {
+        const form = new FormData();
+        form.append("audio", blob, "utterance.wav");
+        const res = await fetch("/identify", { method: "POST", body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || res.statusText || "Identify failed");
+
+        const code = data.language || data.top_language || "—";
+        const uncertain = data.decision === "uncertain" || !data.language;
+        langCode.textContent = code;
+        langCode.className = "lang-code" + (uncertain ? " uncertain" : "");
+
+        const parts = [];
+        if (data.decision) parts.push(data.decision);
+        if (typeof data.margin === "number") parts.push("margin " + data.margin.toFixed(3));
+        if (data.latency_ms && typeof data.latency_ms.total === "number") {
+          parts.push(Math.round(data.latency_ms.total) + " ms");
+        }
+        meta.textContent = parts.join(" · ");
+
+        const list = (data.languages || []).slice(0, 5);
+        ranks.innerHTML = "";
+        if (list.length) {
+          ranks.hidden = false;
+          for (const item of list) {
+            const li = document.createElement("li");
+            li.innerHTML =
+              '<span class="rank">' + item.rank + "</span>" +
+              '<span class="code">' + item.language + "</span>" +
+              '<span class="score">' + Number(item.score).toFixed(3) + "</span>";
+            ranks.appendChild(li);
+          }
+        } else {
+          ranks.hidden = true;
+        }
+        hint.textContent = "Hold the button, speak, release.";
+      } catch (err) {
+        langCode.textContent = "Error";
+        langCode.className = "lang-code empty";
+        meta.textContent = "";
+        ranks.hidden = true;
+        showError(err.message || String(err));
+        hint.textContent = "Hold the button, speak, release.";
+      } finally {
+        micBtn.disabled = false;
+      }
+    }
+
+    function bindPointer() {
+      const start = async (e) => {
+        e.preventDefault();
+        try {
+          await startRecording();
+        } catch (err) {
+          showError(err.message || "Microphone permission denied");
+          setStatus(false, "Microphone unavailable");
+        }
+      };
+      const end = (e) => {
+        e.preventDefault();
+        stopRecording();
+      };
+      micBtn.addEventListener("pointerdown", start);
+      micBtn.addEventListener("pointerup", end);
+      micBtn.addEventListener("pointercancel", end);
+      micBtn.addEventListener("pointerleave", () => {
+        if (recording) stopRecording();
+      });
+      // Avoid context menu on long-press (mobile)
+      micBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+    }
+
+    async function boot() {
+      bindPointer();
+      try {
+        const res = await fetch("/health");
+        const data = await res.json();
+        if (data.model_loaded) {
+          const langs = (data.languages_loaded || data.languages_available || []).join(", ");
+          setStatus(true, "Ready" + (data.device ? " · " + data.device : "") + (langs ? " · " + langs : ""));
+          micBtn.disabled = false;
+        } else {
+          setStatus(false, "Model not loaded");
+        }
+      } catch (_) {
+        setStatus(false, "Server unreachable");
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
