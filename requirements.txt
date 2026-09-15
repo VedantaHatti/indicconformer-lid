@@ -1,10 +1,30 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-python-multipart>=0.0.9
-numpy>=1.24.0
-torch>=2.0.0
-onnxruntime-gpu>=1.16.0
-soundfile>=0.12.1
-huggingface_hub>=0.20.0
-httpx>=0.27.0
-pytest>=8.0.0
+# CPU-safe pinned stack for Language ID.
+# Install with:  pip install -r requirements.txt
+# Torch CPU wheels: pip also needs --extra-index-url https://download.pytorch.org/whl/cpu
+# (make setup / scripts/setup.py do this automatically).
+#
+# Python: 3.10 – 3.12
+
+# API
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+python-dotenv==1.0.1
+
+# Audio + numerics
+numpy==1.26.4
+soundfile==0.12.1
+
+# Preprocessor (TorchScript) — CPU wheel only; encoder/CTC use ONNX Runtime
+torch==2.4.1
+
+# ONNX Runtime (CPU). For GPU, see requirements-gpu.txt
+onnxruntime==1.19.2
+
+# Model download (setup only; server does not use HF at runtime)
+huggingface_hub==0.27.1
+
+# Tests
+httpx==0.28.1
+pytest==8.3.4

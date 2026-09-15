@@ -7,11 +7,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from lid import LanguageIdentifier, LanguageIdentifierError
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -27,7 +30,7 @@ def _config_from_env() -> dict[str, Any]:
     languages = _parse_languages(os.getenv("LID_CANDIDATE_LANGUAGES", "hi,kn,mr,ta,te"))
     return {
         "model_dir": Path(os.getenv("MODEL_DIR", "model")).expanduser(),
-        "device": os.getenv("LID_DEVICE", "cuda").strip().lower(),
+        "device": os.getenv("LID_DEVICE", "cpu").strip().lower(),
         "candidate_languages": languages,
         "margin_threshold": float(os.getenv("LID_MARGIN_THRESHOLD", "0.050965")),
     }

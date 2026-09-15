@@ -120,7 +120,7 @@ class LanguageIdentifier:
     def __init__(
         self,
         model_dir: str | Path = "./model",
-        device: str = "cuda",
+        device: str = "cpu",
         candidate_languages: Sequence[str] | None = None,
         *,
         margin_threshold: float = 0.050965,
@@ -147,28 +147,37 @@ class LanguageIdentifier:
 
         self._validate_artifacts()
         self.providers = self._resolve_providers(self.device_request)
-        self.torch_device = torch.device(
-            "cuda" if self.providers[0] == "CUDAExecutionProvider" else "cpu"
-        )
+        # Preprocessor is TorchScript only; encoder/CTC run in ONNX Runtime.
+        # Always load on CPU so Torch CUDA / driver mismatches never block startup.
+        self.torch_device = torch.device("cpu")
 
         self.preprocessor = torch.jit.load(
             str(self.model_dir / "preprocessor.ts"),
-            map_location=self.torch_device,
+            map_location="cpu",
         )
         self.preprocessor.eval()
 
         session_options = ort.SessionOptions()
         session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self.encoder = ort.InferenceSession(
-            str(self.model_dir / "encoder.onnx"),
-            sess_options=session_options,
-            providers=self.providers,
-        )
-        self.ctc_decoder = ort.InferenceSession(
-            str(self.model_dir / "ctc_decoder.onnx"),
-            sess_options=session_options,
-            providers=self.providers,
-        )
+        try:
+            self.encoder = ort.InferenceSession(
+                str(self.model_dir / "encoder.onnx"),
+                sess_options=session_options,
+                providers=self.providers,
+            )
+            self.ctc_decoder = ort.InferenceSession(
+                str(self.model_dir / "ctc_decoder.onnx"),
+                sess_options=session_options,
+                providers=self.providers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if self.device_request == "cuda":
+                raise LanguageIdentifierError(
+                    "Failed to create ONNX sessions with CUDA. "
+                    "Install requirements-gpu.txt (and a working NVIDIA driver), "
+                    f"or set LID_DEVICE=cpu. Underlying error: {exc}"
+                ) from exc
+            raise LanguageIdentifierError(f"Failed to create ONNX sessions: {exc}") from exc
         self._assert_active_providers()
 
         with open(self.model_dir / "language_masks.json", encoding="utf-8") as reader:
@@ -197,7 +206,7 @@ class LanguageIdentifier:
         if missing:
             raise LanguageIdentifierError(
                 f"Missing required model artifacts in {self.model_dir}: {', '.join(missing)}. "
-                "Run: python scripts/setup_model.py"
+                "Run: make setup  (or python scripts/setup_model.py)"
             )
 
     def _validate_masks(self) -> None:
@@ -225,7 +234,9 @@ class LanguageIdentifier:
             if "CUDAExecutionProvider" not in available:
                 raise LanguageIdentifierError(
                     "device='cuda' requested but CUDAExecutionProvider is unavailable "
-                    f"(available={available}). Install onnxruntime-gpu or use device='cpu'."
+                    f"(available={available}). Install GPU deps with: "
+                    "pip uninstall -y onnxruntime && pip install -r requirements-gpu.txt "
+                    "(or run: make setup and choose gpu). Otherwise set LID_DEVICE=cpu."
                 )
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
         return ["CPUExecutionProvider"]
@@ -238,7 +249,8 @@ class LanguageIdentifier:
             if not providers or providers[0] != "CUDAExecutionProvider":
                 raise LanguageIdentifierError(
                     f"CUDA was requested but the {name} session is not using "
-                    f"CUDAExecutionProvider (active={providers})"
+                    f"CUDAExecutionProvider (active={providers}). "
+                    "Check NVIDIA driver / CUDA libs, or set LID_DEVICE=cpu."
                 )
 
     @property
