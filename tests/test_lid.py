@@ -13,8 +13,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from lid.model import (
-    ALLOW_PATTERNS,
-    IGNORE_PATTERNS,
+    HF_REPO_ID,
     LOCAL_BLANK_ID,
     SHARED_VOCAB_SIZE,
     LanguageIdentifier,
@@ -99,11 +98,8 @@ def _stub_model(monkeypatch, tmp_path: Path, languages: list[str]) -> LanguageId
     )
 
 
-def test_no_rnnt_artifacts_in_download_patterns():
-    assert any("joint" in pattern for pattern in IGNORE_PATTERNS)
-    assert any("rnnt" in pattern for pattern in IGNORE_PATTERNS)
-    assert "assets/vocab.json" in IGNORE_PATTERNS
-    assert ALLOW_PATTERNS == ["assets/*"]
+def test_hf_repo_id_points_to_lid_bundle():
+    assert HF_REPO_ID == "vedantahatti/indic-lid"
 
 
 def test_normalized_ctc_score_shapes():

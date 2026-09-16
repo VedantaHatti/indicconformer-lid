@@ -69,50 +69,116 @@ Verify GPU setup:
 nvidia-smi
 ```
 
-## Installation
+## Quick start
 
 ```bash
+git clone <your-repo-url> indicconformer-lid
 cd indicconformer-lid
+
 python3 -m venv .venv
 source .venv/bin/activate
-
 pip install -U pip
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Install the Hugging Face CLI (skip if `hf` is already available)
+curl -LsSf https://hf.co/cli/install.sh | bash
+
+# Download model artifacts into ./assets/ (see below)
+hf download vedantahatti/indic-lid --local-dir .
+
+python server.py
 ```
 
 The extra PyTorch index installs the CPU wheel used only for the TorchScript
 preprocessor. Encoder and CTC inference use ONNX Runtime.
 
-## Hugging Face authentication
+## Model artifacts (required)
 
-The model repository is gated:
+The ONNX model files (~2.4 GB) are **not** stored in this git repository. Download
+them from Hugging Face before starting the server:
 
-`https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual`
+**https://huggingface.co/vedantahatti/indic-lid**
 
-1. Create or sign in to a Hugging Face account.
-2. Open the model page and accept the access conditions.
-3. Create an access token at https://huggingface.co/settings/tokens
-4. Export it before the first run:
+This bundle contains **LID-only** artifacts derived from
+[ai4bharat/indic-conformer-600m-multilingual](https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual).
+It does not include ASR/RNNT files (`joint_*`, `rnnt_*`, `vocab.json`).
 
-```bash
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
+### Where files must live
+
+All model files must sit in the **`assets/` folder at the project root** — the
+same directory as `server.py`:
+
+```text
+indicconformer-lid/
+├── server.py
+├── lid/
+├── assets/                          ← model files go here
+│   ├── encoder.onnx
+│   ├── ctc_decoder.onnx
+│   ├── preprocessor.ts
+│   ├── language_masks.json
+│   └── <encoder weight shards>      ← ~370 additional files
+└── ...
 ```
 
-`HUGGING_FACE_HUB_TOKEN` is also accepted.
+The server loads models from `assets/` automatically (`ASSETS_DIR` in
+`server.py`). Do not rename this folder or nest files under `assets/assets/`.
 
-## Model download
+### Step-by-step download
 
-On the first `python server.py` startup, the service downloads **only** the LID
-artifacts from the Hugging Face repository:
+**1. Clone this repository and enter the project directory**
 
-- `preprocessor.ts`
-- `encoder.onnx` and its external weight shards
-- `ctc_decoder.onnx`
-- `language_masks.json`
+```bash
+git clone <your-repo-url> indicconformer-lid
+cd indicconformer-lid
+```
 
-RNNT decoder, joint networks, language-specific RNNT heads, and `vocab.json`
-are excluded by download patterns. After the first successful download, inference
-works offline from the local Hugging Face cache.
+**2. Install the Hugging Face CLI** (one-time, if you do not already have `hf`)
+
+```bash
+curl -LsSf https://hf.co/cli/install.sh | bash
+```
+
+Re-open your terminal, or run `export PATH="$HOME/.local/bin:$PATH"`.
+
+**3. Download artifacts into the project root**
+
+Run this **from inside `indicconformer-lid/`** (the folder that contains
+`server.py`):
+
+```bash
+hf download vedantahatti/indic-lid --local-dir .
+```
+
+The trailing `.` is important: it tells the CLI to write files relative to your
+current directory. The repo stores files under an `assets/` prefix, so this
+command creates `./assets/` with all required files.
+
+**4. Verify the download**
+
+```bash
+ls assets/encoder.onnx assets/ctc_decoder.onnx assets/preprocessor.ts assets/language_masks.json
+du -sh assets
+```
+
+You should see all four core files and a total size of roughly **2.4 GB**.
+
+**5. Start the server**
+
+```bash
+python server.py
+```
+
+No Hugging Face token is required for this public model repo. Optional: set
+`HF_TOKEN` for faster download rate limits.
+
+### Troubleshooting downloads
+
+| Problem | What to do |
+|---------|------------|
+| `No space left on device` | Free at least **5 GB** on disk, then re-run the download command |
+| Missing files after a failed download | Delete partial files (`rm -rf assets/*`) and download again |
+| `hf: command not found` | Install the CLI (step 2) or use `pip install huggingface_hub` and retry |
 
 Confirmed ONNX interfaces:
 
@@ -127,11 +193,12 @@ Confirmed ONNX interfaces:
 In `server.py`:
 
 ```python
-DEVICE = "cuda"
-# DEVICE = "cpu"
+DEVICE = "cpu"
+# DEVICE = "cuda"
 ```
 
-Change that one line and restart the server.
+CPU mode works out of the box. Switch to `"cuda"` only if you have a working
+NVIDIA driver, CUDA 12, and cuDNN 9. Restart the server after changing the line.
 
 ## Run the server
 
@@ -150,10 +217,10 @@ Example response:
 ```json
 {
   "status": "ok",
-  "device": "cuda",
+  "device": "cpu",
   "model_loaded": true,
   "available_languages": ["as", "bn", "..."],
-  "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"]
+  "providers": ["CPUExecutionProvider"]
 }
 ```
 
@@ -203,5 +270,7 @@ No transcript or ASR output is returned.
 - Scores come from shared CTC compatibility, not a dedicated supervised LID model.
 - Softmax-derived confidence is a heuristic, not a calibrated probability.
 - Batch size 1 only.
-- First run requires Hugging Face access for the gated model.
+- Model artifacts must be downloaded separately (~2.4 GB) from
+  [vedantahatti/indic-lid](https://huggingface.co/vedantahatti/indic-lid) into
+  `./assets/` before the first run.
 - GPU mode requires CUDA 12 and cuDNN 9 on the host.

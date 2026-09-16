@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Language ID</title>
+  <link rel="stylesheet" href="/frontend/style.css" />
+</head>
+<body>
+  <div class="card">
+    <h1>Language Identification</h1>
+    <p class="subtitle">
+      Press Start, speak, then Stop. The server returns the predicted language.
+    </p>
+
+    <div class="controls">
+      <button id="startBtn" type="button">Start</button>
+      <button id="stopBtn" type="button" disabled>Stop</button>
+    </div>
+    <p class="hint" id="hint">Requesting microphone…</p>
+
+    <div class="result" id="result">
+      <div class="status">Waiting for speech…</div>
+    </div>
+  </div>
+  <script src="/frontend/app.js"></script>
+</body>
+</html>

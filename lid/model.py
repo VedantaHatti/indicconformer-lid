@@ -16,10 +16,7 @@ import onnxruntime as ort
 import torch
 import torch.nn.functional as F
 
-HF_REPO_ID = "ai4bharat/indic-conformer-600m-multilingual"
-
-ALLOW_PATTERNS = ["assets/*"]
-IGNORE_PATTERNS = ["assets/rnnt*", "assets/joint*", "assets/vocab.json"]
+HF_REPO_ID = "vedantahatti/indic-lid"
 
 REQUIRED_FILES = (
     "encoder.onnx",
@@ -27,9 +24,6 @@ REQUIRED_FILES = (
     "preprocessor.ts",
     "language_masks.json",
 )
-
-ASR_IGNORE_PREFIXES = ("rnnt", "joint")
-ASR_IGNORE_NAMES = frozenset({"vocab.json"})
 
 DEFAULT_CANDIDATES = ("hi", "kn", "mr", "ta", "te")
 
@@ -82,14 +76,6 @@ def resolve_hf_token() -> str | None:
     return None
 
 
-def is_lid_artifact(name: str) -> bool:
-    if name in ASR_IGNORE_NAMES:
-        return False
-    if name.startswith(ASR_IGNORE_PREFIXES):
-        return False
-    return True
-
-
 def find_assets_dir(root: Path) -> Path:
     if (root / "encoder.onnx").exists():
         return root
@@ -98,7 +84,7 @@ def find_assets_dir(root: Path) -> Path:
         return assets
     raise LanguageIdentifierError(
         f"Could not find LID artifacts under {root} or {assets}. "
-        "Set HF_TOKEN if the Hugging Face model is gated."
+        f"Download them with: hf download {HF_REPO_ID} --local-dir ."
     )
 
 
@@ -106,41 +92,20 @@ def ensure_lid_artifacts(
     repo_id: str = HF_REPO_ID,
     *,
     token: str | None = None,
+    artifacts_dir: str | Path | None = None,
 ) -> Path:
-    """Download or resolve LID-only artifacts from the Hugging Face Hub cache."""
+    """Download LID-only artifacts into ``assets/`` from the Hugging Face Hub."""
 
-    from huggingface_hub import snapshot_download
-
-    token = token if token is not None else resolve_hf_token()
-    kwargs: dict[str, Any] = {
-        "repo_id": repo_id,
-        "allow_patterns": ALLOW_PATTERNS,
-        "ignore_patterns": IGNORE_PATTERNS,
-    }
-    if token:
-        kwargs["token"] = token
+    from lid.downloader import DownloadError, ensure_lid_artifacts as download_lid_artifacts
 
     try:
-        snapshot_dir = Path(snapshot_download(**kwargs, local_files_only=True))
-    except Exception:
-        snapshot_dir = Path(snapshot_download(**kwargs))
-
-    assets_dir = find_assets_dir(snapshot_dir)
-    missing = [name for name in REQUIRED_FILES if not (assets_dir / name).exists()]
-    if missing:
-        raise LanguageIdentifierError(
-            f"LID setup incomplete; missing in {assets_dir}: {missing}"
+        return download_lid_artifacts(
+            repo_id,
+            token=token,
+            artifacts_dir=artifacts_dir,
         )
-
-    leaked = [
-        path.name
-        for path in assets_dir.iterdir()
-        if path.is_file() and not is_lid_artifact(path.name)
-    ]
-    if leaked:
-        raise LanguageIdentifierError(f"ASR artifacts unexpectedly present: {sorted(leaked)}")
-
-    return assets_dir
+    except DownloadError as exc:
+        raise LanguageIdentifierError(str(exc)) from exc
 
 
 def frame_mask(lengths: torch.Tensor, frames: int) -> torch.Tensor:

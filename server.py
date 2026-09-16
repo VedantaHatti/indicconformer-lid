@@ -15,7 +15,7 @@ from lid import LanguageIdentifier, LanguageIdentifierError
 # ---------------------------------------------------------------------------
 # Change this to "cpu" if you do not have a working NVIDIA GPU / cuDNN setup.
 # ---------------------------------------------------------------------------
-DEVICE = "cuda"
+DEVICE = "cpu"
 # DEVICE = "cpu"
 
 HOST = "0.0.0.0"
@@ -23,6 +23,8 @@ PORT = 8007
 CANDIDATE_LANGUAGES = ["hi", "kn", "mr", "ta", "te"]
 MARGIN_THRESHOLD = 0.050965
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+
 
 
 def _parse_languages(raw: str | None) -> list[str] | None:
@@ -40,9 +42,10 @@ def create_app(model: LanguageIdentifier | None = None) -> FastAPI:
         if state["model"] is None:
             try:
                 state["model"] = LanguageIdentifier(
-                    device=DEVICE,
-                    candidate_languages=CANDIDATE_LANGUAGES,
-                    margin_threshold=MARGIN_THRESHOLD,
+                device=DEVICE,
+                candidate_languages=CANDIDATE_LANGUAGES,
+                margin_threshold=MARGIN_THRESHOLD,
+                assets_dir=ASSETS_DIR,
                 )
             except LanguageIdentifierError as exc:
                 raise RuntimeError(f"Failed to load language ID model: {exc}") from exc
